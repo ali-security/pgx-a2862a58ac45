@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"runtime"
 	"testing"
 	"time"
 
@@ -583,7 +584,16 @@ func TestConnCopyFromFailServerSideMidwayAbortsWithoutWaiting(t *testing.T) {
 
 	endTime := time.Now()
 	copyTime := endTime.Sub(startTime)
-	if copyTime > time.Second {
+	// The point of this bound is that a server-side failure aborts instead of
+	// waiting for the whole (unbounded) copy. One second is too tight on the
+	// Windows CI runner, where loopback TCP plus the race detector measured
+	// 1.15s; 3s still proves the abort is immediate, since waiting out failSource
+	// would run into the 120s context deadline above.
+	copyTimeLimit := time.Second
+	if runtime.GOOS == "windows" {
+		copyTimeLimit = 3 * time.Second
+	}
+	if copyTime > copyTimeLimit {
 		t.Errorf("Failing CopyFrom shouldn't have taken so long: %v", copyTime)
 	}
 

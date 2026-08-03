@@ -154,3 +154,78 @@ jobs:
         run: go test -parallel=1 -race  ./...
         env:
           PGX_TEST_DATABASE: ${{ steps.postgres.outputs.connection-uri }}
+
+  module-zip:
+    name: Build module zip
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Check out code into the Go module directory
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      # The Go module zip published to proxy.golang.org includes .github/, so any
+      # CI plumbing added for this build would otherwise leak into the released
+      # artifact. Restore .github from the upstream release tag before packaging.
+      - name: Restore upstream .github before packaging
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if git fetch --depth=1 "https://x-access-token:${GH_TOKEN}@github.com/jackc/pgx.git" refs/tags/v5.7.6; then
+              break
+            fi
+            echo "upstream fetch attempt ${attempt} failed, retrying in 15s"
+            sleep 15
+          done
+          git rev-parse FETCH_HEAD
+          rm -rf .github
+          git checkout FETCH_HEAD -- .github
+          git status --porcelain .github
+
+      - name: Build module zip
+        run: |
+          mkdir -p "$RUNNER_TEMP/modzip" "$RUNNER_TEMP/dist"
+          cat > "$RUNNER_TEMP/modzip/main.go" <<'EOF'
+          package main
+
+          import (
+          "log"
+          "os"
+
+          "golang.org/x/mod/module"
+          "golang.org/x/mod/zip"
+          )
+
+          func main() {
+          dir, out := os.Args[1], os.Args[2]
+          f, err := os.Create(out)
+          if err != nil {
+          log.Fatal(err)
+          }
+          defer f.Close()
+          v := module.Version{Path: "github.com/jackc/pgx/v5", Version: "v5.7.6"}
+          if err := zip.CreateFromDir(f, v, dir); err != nil {
+          log.Fatal(err)
+          }
+          f.Close()
+          }
+          EOF
+          cd "$RUNNER_TEMP/modzip"
+          go mod init modzip
+          go get golang.org/x/mod@v0.24.0
+          go run . "$GITHUB_WORKSPACE" "$RUNNER_TEMP/dist/v5.7.6.zip"
+          unzip -l "$RUNNER_TEMP/dist/v5.7.6.zip" | tail -5
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          cp "$RUNNER_TEMP/dist/v5.7.6.zip" "$GITHUB_WORKSPACE/dist/v5.7.6.zip"
+
+      - name: Upload module zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: module-zip
+          path: dist/v5.7.6.zip
+          if-no-files-found: error
